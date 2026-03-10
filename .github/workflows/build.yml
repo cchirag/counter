@@ -383,13 +383,14 @@ jobs:
             mingw-w64-ucrt-x86_64-pkg-config
             mingw-w64-ucrt-x86_64-gcc
             zip
+            unzip
             mingw-w64-ucrt-x86_64-nsis
 
       - name: Install Zig
         shell: msys2 {0}
         run: |
-          curl -L -o zig.tar.xz "https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-windows-x86_64-${{ env.ZIG_VERSION }}.zip"
-          unzip zig.tar.xz
+          curl -L -o zig.zip "https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-windows-x86_64-${{ env.ZIG_VERSION }}.zip"
+          unzip zig.zip
           echo "ZIG_PATH=$PWD/zig-windows-x86_64-${{ env.ZIG_VERSION }}" >> $GITHUB_ENV
 
       - name: Build
