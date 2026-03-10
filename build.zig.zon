@@ -1,0 +1,12 @@
+.{
+    .name = .gtk_counter,
+    .version = "0.1.0",
+    .fingerprint = 0xe3b4a2a09a12b9a5,
+    // No external dependencies - we use @cImport directly
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

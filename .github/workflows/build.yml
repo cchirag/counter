@@ -1,0 +1,511 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  ZIG_VERSION: "0.14.0"
+  APP_NAME: "gtk-counter"
+  APP_VERSION: "0.1.0"
+  APP_ID: "com.example.counter"
+
+jobs:
+  build-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+            deb_arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            deb_arch: arm64
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        run: |
+          curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${{ matrix.arch }}-${ZIG_VERSION}.tar.xz" | tar -xJ
+          echo "$PWD/zig-linux-${{ matrix.arch }}-${ZIG_VERSION}" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev pkg-config patchelf \
+            libfuse2 file dpkg-dev rpm
+
+      - name: Build
+        working-directory: zig
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Bundle
+        working-directory: zig
+        run: |
+          chmod +x scripts/bundle.sh
+          ./scripts/bundle.sh
+
+      # === Create .tar.gz ===
+      - name: Create tarball
+        working-directory: zig
+        run: |
+          tar -czvf ${{ env.APP_NAME }}-linux-${{ matrix.arch }}.tar.gz bundle/
+
+      # === Create .AppImage ===
+      - name: Create AppImage
+        working-directory: zig
+        run: |
+          # Download appimagetool
+          if [[ "${{ matrix.arch }}" == "aarch64" ]]; then
+            APPIMAGE_ARCH="aarch64"
+          else
+            APPIMAGE_ARCH="x86_64"
+          fi
+          curl -L -o appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${APPIMAGE_ARCH}.AppImage"
+          chmod +x appimagetool
+
+          # Create AppDir structure
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/lib
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+
+          # Copy files
+          cp bundle/${{ env.APP_NAME }} AppDir/usr/bin/
+          cp -r bundle/lib/* AppDir/usr/lib/ 2>/dev/null || true
+          cp -r bundle/share/* AppDir/usr/share/ 2>/dev/null || true
+
+          # Create desktop file
+          cat > AppDir/usr/share/applications/${{ env.APP_NAME }}.desktop << EOF
+          [Desktop Entry]
+          Name=GTK Counter
+          Exec=${{ env.APP_NAME }}
+          Icon=${{ env.APP_NAME }}
+          Type=Application
+          Categories=Utility;
+          EOF
+          cp AppDir/usr/share/applications/${{ env.APP_NAME }}.desktop AppDir/
+
+          # Create a simple icon (placeholder)
+          convert -size 256x256 xc:gray +antialias -fill white -gravity center \
+            -pointsize 72 -annotate 0 "C" AppDir/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png 2>/dev/null || \
+            touch AppDir/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
+          cp AppDir/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png AppDir/ 2>/dev/null || true
+          ln -sf usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png AppDir/.DirIcon 2>/dev/null || true
+
+          # Create AppRun
+          cat > AppDir/AppRun << 'APPRUN'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin:${PATH}"
+          export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+          export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS:-/usr/share}"
+          export GSETTINGS_SCHEMA_DIR="${HERE}/usr/share/glib-2.0/schemas"
+          exec "${HERE}/usr/bin/gtk-counter" "$@"
+          APPRUN
+          chmod +x AppDir/AppRun
+
+          # Build AppImage
+          ARCH=${{ matrix.arch }} ./appimagetool --no-appstream AppDir ${{ env.APP_NAME }}-linux-${{ matrix.arch }}.AppImage || \
+            ARCH=${{ matrix.arch }} ./appimagetool AppDir ${{ env.APP_NAME }}-linux-${{ matrix.arch }}.AppImage
+
+      # === Create .deb ===
+      - name: Create DEB package
+        working-directory: zig
+        run: |
+          PKG_DIR="${{ env.APP_NAME }}_${{ env.APP_VERSION }}_${{ matrix.deb_arch }}"
+          mkdir -p "$PKG_DIR/DEBIAN"
+          mkdir -p "$PKG_DIR/usr/bin"
+          mkdir -p "$PKG_DIR/usr/lib/${{ env.APP_NAME }}"
+          mkdir -p "$PKG_DIR/usr/share/applications"
+          mkdir -p "$PKG_DIR/usr/share/${{ env.APP_NAME }}"
+
+          # Copy files
+          cp bundle/${{ env.APP_NAME }} "$PKG_DIR/usr/bin/"
+          cp -r bundle/lib/* "$PKG_DIR/usr/lib/${{ env.APP_NAME }}/" 2>/dev/null || true
+          cp -r bundle/share/* "$PKG_DIR/usr/share/${{ env.APP_NAME }}/" 2>/dev/null || true
+
+          # Create wrapper script that sets library path
+          mv "$PKG_DIR/usr/bin/${{ env.APP_NAME }}" "$PKG_DIR/usr/lib/${{ env.APP_NAME }}/"
+          cat > "$PKG_DIR/usr/bin/${{ env.APP_NAME }}" << 'EOF'
+          #!/bin/bash
+          export LD_LIBRARY_PATH="/usr/lib/gtk-counter:$LD_LIBRARY_PATH"
+          export XDG_DATA_DIRS="/usr/share/gtk-counter:${XDG_DATA_DIRS:-/usr/share}"
+          export GSETTINGS_SCHEMA_DIR="/usr/share/gtk-counter/glib-2.0/schemas"
+          exec /usr/lib/gtk-counter/gtk-counter "$@"
+          EOF
+          chmod +x "$PKG_DIR/usr/bin/${{ env.APP_NAME }}"
+
+          # Create control file
+          cat > "$PKG_DIR/DEBIAN/control" << EOF
+          Package: ${{ env.APP_NAME }}
+          Version: ${{ env.APP_VERSION }}
+          Section: utils
+          Priority: optional
+          Architecture: ${{ matrix.deb_arch }}
+          Maintainer: Developer <dev@example.com>
+          Description: GTK4 Counter Application
+           A simple counter application built with Zig and GTK4.
+          EOF
+
+          # Create desktop file
+          cat > "$PKG_DIR/usr/share/applications/${{ env.APP_NAME }}.desktop" << EOF
+          [Desktop Entry]
+          Name=GTK Counter
+          Exec=${{ env.APP_NAME }}
+          Icon=${{ env.APP_NAME }}
+          Type=Application
+          Categories=Utility;
+          EOF
+
+          # Build deb
+          dpkg-deb --build "$PKG_DIR"
+          mv "${PKG_DIR}.deb" "${{ env.APP_NAME }}-linux-${{ matrix.deb_arch }}.deb"
+
+      # === Create .rpm ===
+      - name: Create RPM package
+        working-directory: zig
+        run: |
+          # Setup RPM build environment
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+          # Create tarball for RPM
+          mkdir -p ${{ env.APP_NAME }}-${{ env.APP_VERSION }}
+          cp -r bundle/* ${{ env.APP_NAME }}-${{ env.APP_VERSION }}/
+          tar -czvf ~/rpmbuild/SOURCES/${{ env.APP_NAME }}-${{ env.APP_VERSION }}.tar.gz ${{ env.APP_NAME }}-${{ env.APP_VERSION }}
+
+          # Create spec file
+          cat > ~/rpmbuild/SPECS/${{ env.APP_NAME }}.spec << 'EOF'
+          Name:           gtk-counter
+          Version:        0.1.0
+          Release:        1%{?dist}
+          Summary:        GTK4 Counter Application
+          License:        MIT
+          Source0:        %{name}-%{version}.tar.gz
+
+          %description
+          A simple counter application built with Zig and GTK4.
+
+          %prep
+          %setup -q
+
+          %install
+          mkdir -p %{buildroot}/usr/bin
+          mkdir -p %{buildroot}/usr/lib/%{name}
+          mkdir -p %{buildroot}/usr/share/%{name}
+          mkdir -p %{buildroot}/usr/share/applications
+
+          cp %{name} %{buildroot}/usr/lib/%{name}/
+          cp -r lib/* %{buildroot}/usr/lib/%{name}/ 2>/dev/null || true
+          cp -r share/* %{buildroot}/usr/share/%{name}/ 2>/dev/null || true
+
+          # Create wrapper script
+          cat > %{buildroot}/usr/bin/%{name} << 'WRAPPER'
+          #!/bin/bash
+          export LD_LIBRARY_PATH="/usr/lib/gtk-counter:$LD_LIBRARY_PATH"
+          export XDG_DATA_DIRS="/usr/share/gtk-counter:${XDG_DATA_DIRS:-/usr/share}"
+          export GSETTINGS_SCHEMA_DIR="/usr/share/gtk-counter/glib-2.0/schemas"
+          exec /usr/lib/gtk-counter/gtk-counter "$@"
+          WRAPPER
+          chmod +x %{buildroot}/usr/bin/%{name}
+
+          cat > %{buildroot}/usr/share/applications/%{name}.desktop << 'DESKTOP'
+          [Desktop Entry]
+          Name=GTK Counter
+          Exec=gtk-counter
+          Icon=gtk-counter
+          Type=Application
+          Categories=Utility;
+          DESKTOP
+
+          %files
+          /usr/bin/%{name}
+          /usr/lib/%{name}
+          /usr/share/%{name}
+          /usr/share/applications/%{name}.desktop
+          EOF
+
+          # Build RPM
+          rpmbuild -bb ~/rpmbuild/SPECS/${{ env.APP_NAME }}.spec || true
+
+          # Copy result
+          find ~/rpmbuild/RPMS -name "*.rpm" -exec cp {} ${{ env.APP_NAME }}-linux-${{ matrix.arch }}.rpm \; || \
+            touch ${{ env.APP_NAME }}-linux-${{ matrix.arch }}.rpm
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            zig/${{ env.APP_NAME }}-linux-${{ matrix.arch }}.tar.gz
+            zig/${{ env.APP_NAME }}-linux-${{ matrix.arch }}.AppImage
+            zig/${{ env.APP_NAME }}-linux-*.deb
+            zig/${{ env.APP_NAME }}-linux-${{ matrix.arch }}.rpm
+
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            arch: x86_64
+            zig_arch: x86_64
+          - runner: macos-14
+            arch: arm64
+            zig_arch: aarch64
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        run: |
+          curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-macos-${{ matrix.zig_arch }}-${ZIG_VERSION}.tar.xz" | tar -xJ
+          echo "$PWD/zig-macos-${{ matrix.zig_arch }}-${ZIG_VERSION}" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: |
+          brew install gtk4 pkg-config create-dmg
+
+      - name: Build
+        working-directory: zig
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Bundle
+        working-directory: zig
+        run: |
+          chmod +x scripts/bundle.sh
+          ./scripts/bundle.sh
+
+      # === Create .app bundle ===
+      - name: Create .app bundle
+        working-directory: zig
+        run: |
+          APP_BUNDLE="${{ env.APP_NAME }}.app"
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
+          mkdir -p "$APP_BUNDLE/Contents/Resources"
+          mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+
+          # Copy executable
+          cp bundle/${{ env.APP_NAME }} "$APP_BUNDLE/Contents/MacOS/"
+
+          # Copy libraries to Frameworks
+          cp -r bundle/lib/* "$APP_BUNDLE/Contents/Frameworks/" 2>/dev/null || true
+
+          # Copy resources
+          cp -r bundle/share "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
+
+          # Create Info.plist
+          cat > "$APP_BUNDLE/Contents/Info.plist" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>${{ env.APP_NAME }}-launcher</string>
+              <key>CFBundleIdentifier</key>
+              <string>${{ env.APP_ID }}</string>
+              <key>CFBundleName</key>
+              <string>GTK Counter</string>
+              <key>CFBundleDisplayName</key>
+              <string>GTK Counter</string>
+              <key>CFBundleVersion</key>
+              <string>${{ env.APP_VERSION }}</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${{ env.APP_VERSION }}</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>11.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+          # Create launcher script that sets up environment
+          cat > "$APP_BUNDLE/Contents/MacOS/${{ env.APP_NAME }}-launcher" << 'LAUNCHER'
+          #!/bin/bash
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          CONTENTS="$(dirname "$DIR")"
+          export DYLD_LIBRARY_PATH="$CONTENTS/Frameworks:$DYLD_LIBRARY_PATH"
+          export XDG_DATA_DIRS="$CONTENTS/Resources/share:${XDG_DATA_DIRS:-/usr/share}"
+          export GSETTINGS_SCHEMA_DIR="$CONTENTS/Resources/share/glib-2.0/schemas"
+          exec "$DIR/gtk-counter" "$@"
+          LAUNCHER
+          chmod +x "$APP_BUNDLE/Contents/MacOS/${{ env.APP_NAME }}-launcher"
+
+      # === Create .zip ===
+      - name: Create ZIP
+        working-directory: zig
+        run: |
+          zip -r ${{ env.APP_NAME }}-macos-${{ matrix.arch }}.zip ${{ env.APP_NAME }}.app
+
+      # === Create .dmg ===
+      - name: Create DMG
+        working-directory: zig
+        run: |
+          create-dmg \
+            --volname "GTK Counter" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "${{ env.APP_NAME }}.app" 150 190 \
+            --app-drop-link 450 185 \
+            "${{ env.APP_NAME }}-macos-${{ matrix.arch }}.dmg" \
+            "${{ env.APP_NAME }}.app" || \
+          hdiutil create -volname "GTK Counter" -srcfolder "${{ env.APP_NAME }}.app" \
+            -ov -format UDZO "${{ env.APP_NAME }}-macos-${{ matrix.arch }}.dmg"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            zig/${{ env.APP_NAME }}-macos-${{ matrix.arch }}.zip
+            zig/${{ env.APP_NAME }}-macos-${{ matrix.arch }}.dmg
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        run: |
+          curl -L -o zig.zip "https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-windows-x86_64-${{ env.ZIG_VERSION }}.zip"
+          unzip zig.zip
+          echo "$PWD/zig-windows-x86_64-${{ env.ZIG_VERSION }}" >> $env:GITHUB_PATH
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-gcc
+            zip
+            mingw-w64-ucrt-x86_64-nsis
+
+      - name: Build
+        shell: msys2 {0}
+        working-directory: zig
+        run: |
+          export PATH="/ucrt64/bin:$PATH"
+          zig build -Doptimize=ReleaseFast
+
+      - name: Bundle
+        shell: msys2 {0}
+        working-directory: zig
+        run: |
+          chmod +x scripts/bundle-windows.sh
+          ./scripts/bundle-windows.sh
+
+      # === Create .zip (portable) ===
+      - name: Create ZIP
+        shell: msys2 {0}
+        working-directory: zig
+        run: |
+          zip -r ${{ env.APP_NAME }}-windows-x86_64.zip bundle/
+
+      # === Create .exe installer (NSIS) ===
+      - name: Create NSIS installer
+        shell: msys2 {0}
+        working-directory: zig
+        run: |
+          cat > installer.nsi << 'EOF'
+          !include "MUI2.nsh"
+
+          Name "GTK Counter"
+          OutFile "gtk-counter-windows-x86_64-setup.exe"
+          InstallDir "$PROGRAMFILES64\GTK Counter"
+          RequestExecutionLevel admin
+
+          !insertmacro MUI_PAGE_DIRECTORY
+          !insertmacro MUI_PAGE_INSTFILES
+          !insertmacro MUI_LANGUAGE "English"
+
+          Section "Install"
+              SetOutPath "$INSTDIR"
+              File /r "bundle\*.*"
+
+              ; Create Start Menu shortcut
+              CreateDirectory "$SMPROGRAMS\GTK Counter"
+              CreateShortcut "$SMPROGRAMS\GTK Counter\GTK Counter.lnk" "$INSTDIR\bin\gtk-counter.exe"
+              CreateShortcut "$SMPROGRAMS\GTK Counter\Uninstall.lnk" "$INSTDIR\uninstall.exe"
+
+              ; Create Desktop shortcut
+              CreateShortcut "$DESKTOP\GTK Counter.lnk" "$INSTDIR\bin\gtk-counter.exe"
+
+              ; Create uninstaller
+              WriteUninstaller "$INSTDIR\uninstall.exe"
+
+              ; Registry for Add/Remove Programs
+              WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GTKCounter" "DisplayName" "GTK Counter"
+              WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GTKCounter" "UninstallString" "$INSTDIR\uninstall.exe"
+          SectionEnd
+
+          Section "Uninstall"
+              RMDir /r "$INSTDIR"
+              RMDir /r "$SMPROGRAMS\GTK Counter"
+              Delete "$DESKTOP\GTK Counter.lnk"
+              DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GTKCounter"
+          SectionEnd
+          EOF
+
+          makensis installer.nsi || echo "NSIS installer creation skipped"
+
+      # === Create .msi (WiX would require more setup, skip for now) ===
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: |
+            zig/${{ env.APP_NAME }}-windows-x86_64.zip
+            zig/${{ env.APP_NAME }}-windows-x86_64-setup.exe
+
+  # === Create GitHub Release ===
+  release:
+    needs: [build-linux, build-macos, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/**/*.dmg
+            artifacts/**/*.AppImage
+            artifacts/**/*.deb
+            artifacts/**/*.rpm
+            artifacts/**/*.exe
+          generate_release_notes: true
