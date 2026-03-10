@@ -45,24 +45,20 @@ jobs:
             libfuse2 file dpkg-dev rpm
 
       - name: Build
-        working-directory: zig
         run: zig build -Doptimize=ReleaseFast
 
       - name: Bundle
-        working-directory: zig
         run: |
           chmod +x scripts/bundle.sh
           ./scripts/bundle.sh
 
       # === Create .tar.gz ===
       - name: Create tarball
-        working-directory: zig
         run: |
           tar -czvf ${{ env.APP_NAME }}-linux-${{ matrix.arch }}.tar.gz bundle/
 
       # === Create .AppImage ===
       - name: Create AppImage
-        working-directory: zig
         run: |
           # Download appimagetool
           if [[ "${{ matrix.arch }}" == "aarch64" ]]; then
@@ -121,7 +117,6 @@ jobs:
 
       # === Create .deb ===
       - name: Create DEB package
-        working-directory: zig
         run: |
           PKG_DIR="${{ env.APP_NAME }}_${{ env.APP_VERSION }}_${{ matrix.deb_arch }}"
           mkdir -p "$PKG_DIR/DEBIAN"
@@ -174,7 +169,6 @@ jobs:
 
       # === Create .rpm ===
       - name: Create RPM package
-        working-directory: zig
         run: |
           # Setup RPM build environment
           mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
@@ -247,17 +241,17 @@ jobs:
         with:
           name: linux-${{ matrix.arch }}
           path: |
-            zig/${{ env.APP_NAME }}-linux-${{ matrix.arch }}.tar.gz
-            zig/${{ env.APP_NAME }}-linux-${{ matrix.arch }}.AppImage
-            zig/${{ env.APP_NAME }}-linux-*.deb
-            zig/${{ env.APP_NAME }}-linux-${{ matrix.arch }}.rpm
+            ${{ env.APP_NAME }}-linux-${{ matrix.arch }}.tar.gz
+            ${{ env.APP_NAME }}-linux-${{ matrix.arch }}.AppImage
+            ${{ env.APP_NAME }}-linux-*.deb
+            ${{ env.APP_NAME }}-linux-${{ matrix.arch }}.rpm
 
   build-macos:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-13
+          - runner: macos-12
             arch: x86_64
             zig_arch: x86_64
           - runner: macos-14
@@ -280,18 +274,15 @@ jobs:
           brew install gtk4 pkg-config create-dmg
 
       - name: Build
-        working-directory: zig
         run: zig build -Doptimize=ReleaseFast
 
       - name: Bundle
-        working-directory: zig
         run: |
           chmod +x scripts/bundle.sh
           ./scripts/bundle.sh
 
       # === Create .app bundle ===
       - name: Create .app bundle
-        working-directory: zig
         run: |
           APP_BUNDLE="${{ env.APP_NAME }}.app"
           mkdir -p "$APP_BUNDLE/Contents/MacOS"
@@ -349,13 +340,11 @@ jobs:
 
       # === Create .zip ===
       - name: Create ZIP
-        working-directory: zig
         run: |
           zip -r ${{ env.APP_NAME }}-macos-${{ matrix.arch }}.zip ${{ env.APP_NAME }}.app
 
       # === Create .dmg ===
       - name: Create DMG
-        working-directory: zig
         run: |
           create-dmg \
             --volname "GTK Counter" \
@@ -374,8 +363,8 @@ jobs:
         with:
           name: macos-${{ matrix.arch }}
           path: |
-            zig/${{ env.APP_NAME }}-macos-${{ matrix.arch }}.zip
-            zig/${{ env.APP_NAME }}-macos-${{ matrix.arch }}.dmg
+            ${{ env.APP_NAME }}-macos-${{ matrix.arch }}.zip
+            ${{ env.APP_NAME }}-macos-${{ matrix.arch }}.dmg
 
   build-windows:
     runs-on: windows-latest
@@ -404,14 +393,12 @@ jobs:
 
       - name: Build
         shell: msys2 {0}
-        working-directory: zig
         run: |
           export PATH="/ucrt64/bin:$PATH"
           zig build -Doptimize=ReleaseFast
 
       - name: Bundle
         shell: msys2 {0}
-        working-directory: zig
         run: |
           chmod +x scripts/bundle-windows.sh
           ./scripts/bundle-windows.sh
@@ -419,14 +406,12 @@ jobs:
       # === Create .zip (portable) ===
       - name: Create ZIP
         shell: msys2 {0}
-        working-directory: zig
         run: |
           zip -r ${{ env.APP_NAME }}-windows-x86_64.zip bundle/
 
       # === Create .exe installer (NSIS) ===
       - name: Create NSIS installer
         shell: msys2 {0}
-        working-directory: zig
         run: |
           cat > installer.nsi << 'EOF'
           !include "MUI2.nsh"
@@ -477,8 +462,8 @@ jobs:
         with:
           name: windows-x86_64
           path: |
-            zig/${{ env.APP_NAME }}-windows-x86_64.zip
-            zig/${{ env.APP_NAME }}-windows-x86_64-setup.exe
+            ${{ env.APP_NAME }}-windows-x86_64.zip
+            ${{ env.APP_NAME }}-windows-x86_64-setup.exe
 
   # === Create GitHub Release ===
   release:
