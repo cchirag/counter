@@ -373,12 +373,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Zig
-        run: |
-          curl -L -o zig.zip "https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-windows-x86_64-${{ env.ZIG_VERSION }}.zip"
-          unzip zig.zip
-          echo "$PWD/zig-windows-x86_64-${{ env.ZIG_VERSION }}" >> $env:GITHUB_PATH
-
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
@@ -391,15 +385,23 @@ jobs:
             zip
             mingw-w64-ucrt-x86_64-nsis
 
+      - name: Install Zig
+        shell: msys2 {0}
+        run: |
+          curl -L -o zig.tar.xz "https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-windows-x86_64-${{ env.ZIG_VERSION }}.zip"
+          unzip zig.tar.xz
+          echo "ZIG_PATH=$PWD/zig-windows-x86_64-${{ env.ZIG_VERSION }}" >> $GITHUB_ENV
+
       - name: Build
         shell: msys2 {0}
         run: |
-          export PATH="/ucrt64/bin:$PATH"
+          export PATH="$ZIG_PATH:/ucrt64/bin:$PATH"
           zig build -Doptimize=ReleaseFast
 
       - name: Bundle
         shell: msys2 {0}
         run: |
+          export PATH="$ZIG_PATH:/ucrt64/bin:$PATH"
           chmod +x scripts/bundle-windows.sh
           ./scripts/bundle-windows.sh
 
