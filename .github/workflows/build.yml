@@ -41,7 +41,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev pkg-config patchelf \
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config patchelf \
             libfuse2 file dpkg-dev rpm
 
       - name: Build
@@ -271,7 +271,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install gtk4 pkg-config create-dmg
+          brew install gtk4 libadwaita pkg-config create-dmg
 
       - name: Build
         run: zig build -Doptimize=ReleaseFast
@@ -380,6 +380,7 @@ jobs:
           update: true
           install: >-
             mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-libadwaita
             mingw-w64-ucrt-x86_64-pkg-config
             mingw-w64-ucrt-x86_64-gcc
             zip
@@ -397,12 +398,14 @@ jobs:
         shell: msys2 {0}
         run: |
           export PATH="$ZIG_PATH:/ucrt64/bin:$PATH"
+          export PKG_CONFIG_PATH="/ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig"
           zig build -Doptimize=ReleaseFast
 
       - name: Bundle
         shell: msys2 {0}
         run: |
           export PATH="$ZIG_PATH:/ucrt64/bin:$PATH"
+          export PKG_CONFIG_PATH="/ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig"
           chmod +x scripts/bundle-windows.sh
           ./scripts/bundle-windows.sh
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bundle GTK4 application with all dependencies for portable distribution
+# Bundle GTK4/libadwaita application with all dependencies for portable distribution
 set -e
 
 APP_NAME="gtk-counter"
