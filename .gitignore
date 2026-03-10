@@ -3,7 +3,7 @@
 zig-out/
 
 # Bundled application output
-bundle/
+dist/
 
 # macOS
 .DS_Store
