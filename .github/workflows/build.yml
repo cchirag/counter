@@ -399,6 +399,7 @@ jobs:
         run: |
           export PATH="$ZIG_PATH:/ucrt64/bin:$PATH"
           export PKG_CONFIG_PATH="/ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig"
+          export LIBRARY_PATH="/ucrt64/lib"
           zig build -Doptimize=ReleaseFast
 
       - name: Bundle

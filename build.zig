@@ -13,6 +13,14 @@ pub fn build(b: *std.Build) void {
     });
 
     exe.linkLibC();
+
+    // On Windows with MSYS2, add library search path
+    if (target.result.os.tag == .windows) {
+        // Try common MSYS2 UCRT64 paths
+        exe.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib" });
+        exe.addLibraryPath(.{ .cwd_relative = "D:/a/_temp/msys64/ucrt64/lib" }); // GitHub Actions path
+    }
+
     exe.linkSystemLibrary("libadwaita-1");
 
     b.installArtifact(exe);
